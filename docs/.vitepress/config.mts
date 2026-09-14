@@ -423,6 +423,15 @@ export default defineConfig({
                 },
               ],
             },
+            {
+              text: "Proxmox Automation",
+              items: [
+                {
+                  text: "Proxmox Automation Backup Monitoring",
+                  link: "/infra/vm/labs/proxmox-automation/proxmox-automation-backup-monitoring",
+                },
+              ],
+            },
           ],
         },
       ],
