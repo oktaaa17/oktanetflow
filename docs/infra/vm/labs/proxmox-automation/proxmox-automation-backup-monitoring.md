@@ -91,3 +91,5 @@ Note: BackupAudit role will be created with the specified privileges. Be sure to
 - <ButtonVue variant="secondary" as="a" class="no-underline!" href="./backup-test-connection.sh" download>
   backup-test-connection.sh(Test Backup Connection)
   </ButtonVue>
+
+- **Documentation:** [Proxmox API Docs](https://pve.proxmox.com/pve-docs/api-viewer/#/access)
