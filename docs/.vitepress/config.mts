@@ -77,6 +77,10 @@ export default defineConfig({
                 text: "Proxmox: Ubuntu Cloud",
                 link: "/infra/vm/labs/proxmox/ubuntu-cloud-on-proxmox",
               },
+              {
+                text: "Proxmox: AlmaLinux Network Setup",
+                link: "/infra/vm/labs/proxmox/almalinux-network-setup",
+              },
             ],
           },
           {
@@ -420,6 +424,10 @@ export default defineConfig({
                 {
                   text: "Ubuntu Cloud on Proxmox",
                   link: "/infra/vm/labs/proxmox/ubuntu-cloud-on-proxmox",
+                },
+                {
+                  text: "AlmaLinux Network Setup",
+                  link: "/infra/vm/labs/proxmox/almalinux-network-setup",
                 },
               ],
             },
