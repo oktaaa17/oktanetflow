@@ -55,6 +55,13 @@ Format: <role_name> [privilege1, privilege2, ...]
 create role BackupAudit: datastore.allocate, datastore.audit, sys.audit, vms.audit, vm.backup
 ```
 
+::: warning
+Proxmox Virtual Environment 6.4-13, not supported read-only backup-audit.
+
+Provide these parameter in BackupAudit Roles
+BackupAudit: Datastore.Allocate
+:::
+
 #### Step 2.2: Datacenter > Permissions > API-TOKEN
 
 ```bash
