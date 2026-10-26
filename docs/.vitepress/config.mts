@@ -375,6 +375,10 @@ export default defineConfig({
                   text: "Lab 01: Quick VM Create in Proxmox",
                   link: "/infra/linux/labs/bash/lab-01-quick-vm-create-in-proxmox",
                 },
+                {
+                  text: "Lab 02: Bash Scripting Web Latency Profiler",
+                  link: "/infra/linux/labs/bash/lab-02-bash-scripting-web-latency-profiler",
+                },
               ],
             },
             {
