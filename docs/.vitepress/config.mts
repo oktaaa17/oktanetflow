@@ -389,6 +389,10 @@ export default defineConfig({
                       text: "Lab 01: Quick Proxmox Server Specs Scanning",
                       link: "/infra/linux/labs/bash/proxmox-bash/lab-01-quick-proxmox-server-specs-scanning",
                     },
+                    {
+                      text: "Lab 02: Quick Proxmox Pull Backup",
+                      link: "/infra/linux/labs/bash/proxmox-bash/lab-02-quick-proxmox-pull-backup",
+                    },
                   ],
                 },
               ],
