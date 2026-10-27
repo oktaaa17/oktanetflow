@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Script Name   : pve-hw-scanner.sh
-# Purpose       : Comprehensive Proxmox VE Hardware & Inventory Audit
-# Target        : Dell PowerEdge, HPE ProLiant, Supermicro, Lenovo, Generic Servers
-# Requirements  : Root privileges, dmidecode, lshw/lsblk, pveversion
+# Version       : Beta Version
+# Author        : Dimas Oktavian Ramadhan (Oktanetflow)
+# Copyright     : Copyright © 2026 Oktanetflow
+# Website       : https://oktanetflow.vercel.app/
+# Execution     : bash <(curl -fsSL https://oktanetflow.vercel.app/infra/linux/labs/bash/pve-hw-scanner.sh)
 # ==============================================================================
 set -euo pipefail
 
-# Formatting & ANSI Colors
+# ANSI color codes for terminal rendering
 BOLD='\033[1m'
 NC='\033[0m'
 BLUE='\033[0;34m'
@@ -16,6 +18,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 
+BRAND_HEADER="Beta Version | Copyright © 2026 Oktanetflow\nDocs & Lab: https://oktanetflow.vercel.app/"
+
+# Check root privilege
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}[ERROR] This inventory scanner must be executed as root.${NC}" >&2
     exit 1
@@ -32,6 +37,14 @@ print_subheader() {
     local subtitle="$1"
     echo -e "\n${BOLD}${YELLOW}--> ${subtitle}${NC}"
 }
+
+# Initial Brand Banner
+echo -e "${BOLD}${BLUE}======================================================================${NC}"
+echo -e "${CYAN}        OKTANETFLOW PROXMOX HARDWARE & INVENTORY PROFILER             ${NC}"
+echo -e "${CYAN}${BRAND_HEADER}${NC}"
+echo -e "${BOLD}${BLUE}======================================================================${NC}"
+echo -e "Audit Timestamp : $(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo -e "Scanned Node    : $(hostname -f 2>/dev/null || hostname)"
 
 # ------------------------------------------------------------------------------
 # 1. HOST & CHASSIS IDENTIFICATION
@@ -56,7 +69,7 @@ printf "%-24s: %s (Released: %s)\n" "BIOS Version" "${BIOS_VERSION}" "${BIOS_DAT
 
 # Check for IPMI / BMC (iDRAC, iLO, BMC IP)
 if command -v ipmitool >/dev/null 2>&1; then
-    BMC_IP=$(ipmitool lan print 1 2>/dev/null | awk -F': ' '/IP Address  /{print $2}' | xargs || true)
+    BMC_IP=$(ipmitool lan print 1 2>/dev/null | awk -F': ' '/IP Address[ \t]*:/{print $2}' | xargs || true)
     [[ -n "${BMC_IP}" ]] && printf "%-24s: ${CYAN}%s${NC}\n" "Out-of-Band (BMC/iDRAC)" "${BMC_IP}"
 fi
 
@@ -108,7 +121,7 @@ echo "-------------------|--------------|------------|------------------|-------
 
 dmidecode -t 17 2>/dev/null | awk '
 BEGIN {
-    locator="N/A"; size="N/A"; form="N/A"; mfg="N/A"; part="N/A"; speed="N/A"; cfg_speed="N/A";
+    locator="N/A"; size="N/A"; type="N/A"; mfg="N/A"; part="N/A"; speed="N/A"; cfg_speed="N/A";
 }
 /^\s*Locator:/ { locator=$2 }
 /^\s*Size:/ { $1=""; size=$0; gsub(/^[ \t]+/, "", size) }
@@ -143,13 +156,19 @@ lspci -nn | grep -iE 'raid|storage|nvme|sata|sas|scsi' | while read -r line; do
     echo "  - ${line}"
 done
 
+# Enterprise Hardware RAID CLI Utility Check (Dell PERC / MegaRAID)
+if command -v perccli64 >/dev/null 2>&1 || command -v perccli >/dev/null 2>&1 || command -v storcli >/dev/null 2>&1; then
+    RAID_TOOL=$(command -v perccli64 || command -v perccli || command -v storcli)
+    print_subheader "Hardware RAID Controller Virtual Drives (${RAID_TOOL})"
+    ${RAID_TOOL} /c0 /vcall show 2>/dev/null | grep -E "^[0-9]+/[0-9]+|^VD" || true
+fi
+
 print_subheader "Block Devices, Media Type, Capacity & Serial Numbers"
 printf "%-10s %-8s %-10s %-20s %-22s %-10s %-12s\n" \
     "NAME" "TYPE" "SIZE" "VENDOR/MODEL" "SERIAL" "ROTA (SSD/HDD)" "TRAN"
 echo "--------------------------------------------------------------------------------------------------------"
 
 lsblk -d -o NAME,TYPE,SIZE,MODEL,SERIAL,ROTA,TRAN -e 7,11 --noheadings | while read -r name type size model serial rota tran; do
-    # ROTA: 0 = SSD/NVMe, 1 = HDD
     local_rota="HDD"
     [[ "${rota}" == "0" ]] && local_rota="SSD/NVMe"
 
@@ -186,5 +205,12 @@ for iface in $(ls /sys/class/net | grep -vE 'lo|veth|fwpr|fwbr|qbr|qvb|qvo|tap')
         "${iface}" "${MAC}" "${OPERSTATE}" "${SPEED}" "${DRIVER}"
 done
 
+# ------------------------------------------------------------------------------
+# FOOTER & OKTANETFLOW WATERMARK
+# ------------------------------------------------------------------------------
 echo ""
+echo -e "${BOLD}${BLUE}======================================================================${NC}"
 echo -e "${GREEN}Scan completed successfully.${NC}"
+echo -e "${BOLD}${BLUE}----------------------------------------------------------------------${NC}"
+echo -e "${CYAN}${BRAND_HEADER}${NC}"
+echo -e "${BOLD}${BLUE}======================================================================${NC}"
