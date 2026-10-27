@@ -370,6 +370,7 @@ export default defineConfig({
           items: [
             {
               text: "Bash",
+              collapsed: false, // optional: control whether the Bash sub-group is collapsible
               items: [
                 {
                   text: "Lab 01: Quick VM Create in Proxmox",
@@ -379,28 +380,16 @@ export default defineConfig({
                   text: "Lab 02: Bash Scripting Web Latency Profiler",
                   link: "/infra/linux/labs/bash/lab-02-bash-scripting-web-latency-profiler",
                 },
-              ],
-            },
-            {
-              text: "SSH",
-              items: [
-                // { text: "Lab 01: ...", link: "/infra/linux/labs/ssh/lab-01" },
-              ],
-            },
-            {
-              text: "Ubuntu",
-              items: [
                 {
-                  text: "Lab 01: Quick ubuntu 24.04 configuration for oldest hardware",
-                  link: "/infra/linux/labs/ubuntu/lab-01-quick-ubuntu-2404-configuration-for-oldest-hardware",
-                },
-                {
-                  text: "Lab 02: Change Root Password",
-                  link: "/infra/linux/labs/ubuntu/lab-02-change-root-password",
-                },
-                {
-                  text: "Lab 03: Change Network and Nameserver",
-                  link: "/infra/linux/labs/ubuntu/lab-03-change-network-and-nameserver",
+                  text: "Proxmox Bash",
+                  link: "/infra/linux/labs/bash/proxmox-bash",
+                  collapsed: false, // optional: control whether deeper nested levels collapse
+                  items: [
+                    {
+                      text: "Lab 01: Quick Proxmox Server Specs Scanning",
+                      link: "/infra/linux/labs/bash/proxmox-bash/lab-01-quick-proxmox-server-specs-scanning",
+                    },
+                  ],
                 },
               ],
             },
