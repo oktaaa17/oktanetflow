@@ -37,12 +37,12 @@ head:
 
 # Lab 01: Bash Scripting Automation
 
-## 1. Bash with Web Latency Profiler
+## 1. Bash Quick Proxmox Server Specs Scanning
 
 ```bash
 bash <(curl -fsSL https://oktanetflow.vercel.app/infra/linux/labs/bash/proxmox-bash/pve-hw-scanner.sh | tr -d '\r')
 ```
 
 ::: info
-Note: Run in a Linux environment with Bash installed. This script will profile web latency for specified URLs and output the results in a structured format to prove problems from codebase or hosting.
+Note: Run in a Linux environment with Bash installed. This script will scan and display the Proxmox server specifications, including CPU, memory, storage, and network information. It helps in quickly assessing the server's hardware capabilities for virtualization tasks.
 :::
