@@ -83,7 +83,10 @@ graph LR
 ### 4. Network Labs: Implementation & Hands-on
 
 #### Cisco Mastery
-* **Cisco**: [Lab 01: Dasar VLAN & Trunking](../../ecosystem/cisco/labs/vlan/lab-vlan-dasar-trunking.md).
+* **Cisco**: [Lab 01: Dasar VLAN & Trunking](../../ecosystem/cisco/labs/vlan/lab-01-basic-vlan-trunking.md).
+* **MikroTik**: [Lab 01: Dasar VLAN & Trunking](../../ecosystem/mikrotik/labs/vlan/lab-01-basic-vlan-trunking.md).
+* **Juniper**: [Lab 01: Dasar VLAN & Trunking](../../ecosystem/juniper/labs/vlan/lab-01-basic-vlan-trunking.md).
+* **Ruijie**: [Lab 01: Dasar VLAN & Trunking](../../ecosystem/ruijie/labs/vlan/lab-01-basic-vlan-trunking.md).
 
 ::: tip Multi Vendor Coming soons
 More content coming soon! We are still focusing on Cisco Mastery. Check back later for updates.

@@ -32,7 +32,7 @@ head:
       content: "Belajar Dasar VLAN & Trunking Cisco"
   - - link
     - rel: canonical
-      href: "https://oktanetflow.vercel.app/ecosystem/cisco/labs/vlan/lab-vlan-dasar-trunking"
+      href: "https://oktanetflow.vercel.app/ecosystem/cisco/labs/vlan/lab-01-basic-vlan-trunking"
 ---
 
 # Lab 01: Dasar VLAN & Trunking

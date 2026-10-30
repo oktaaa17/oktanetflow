@@ -39,7 +39,7 @@ head:
 
 ### Step 1: Prerequisites
 
-- Ensure you have [{{REQUIREMENT}}]({{URL}}) installed and running.
+- Ensure you have [{{REQUIREMENT}}](https://example.com) installed and running.
 
 ### Step 2: Installation
 

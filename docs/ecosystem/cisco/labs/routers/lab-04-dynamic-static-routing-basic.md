@@ -290,9 +290,9 @@ default-information originate: Use this to advertise the default route to OSPF n
 - **Mistakes I Made:** first time learned, usually are used redistribution but it was need to be configured the link between routers otherwise used `default-information originate` is more appropriate and reduces hop count.
 - **Related Resources:**
   - [Dynamic Routing](/guide/layer-3/dynamic-routing)
-  - [Dynamic Routing Basic](/ecosystem/cisco/labs/routers/lab-dynamic-routing-basic)
+  - [Dynamic Routing Basic](/ecosystem/cisco/labs/routers/lab-02-dynamic-routing-basic)
   - [Static Routing](/guide/layer-3/static-routing)
-  - [Static Routing Basic](/ecosystem/cisco/labs/routers/lab-static-route)
+  - [Static Routing Basic](/ecosystem/cisco/labs/routers/lab-01-static-routing)
 - **Downloads:**
   <ButtonVue variant="secondary" as="a" class="no-underline!" href="./assets/lab-dynamic-static/lab-dynamic-static-basic-complete.pkt" download>
   lab-dynamic-static-basic-complete.pkt(Full Config)

@@ -57,7 +57,7 @@ graph TD
 ### 4. Network Labs: Implementation & Hands-on
 
 #### Cisco Mastery
-* **Cisco**: [Lab 01: Dasar STP](../../ecosystem/cisco/labs/stp/lab-stp-dasar.md).
+* **Cisco**: Lab STP *(coming soon)*.
 
 ::: tip Multi Vendor Coming soons
 More content coming soon! We are still focusing on Cisco Mastery. Check back later for updates.

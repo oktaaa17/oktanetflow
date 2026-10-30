@@ -32,7 +32,7 @@ head:
       content: "Lab 01: Mikrotik Dasar Capstone - Oktanetflow"
   - - link
     - rel: canonical
-      href: "https://oktanetflow.vercel.app/ecosystem/mikrotik/labs/capstone/lab-dasar-capstone"
+      href: "https://oktanetflow.vercel.app/ecosystem/mikrotik/labs/capstone/lab-01-basic-capstone"
 ---
 
 # Lab 01: Mikrotik Dasar Capstone(OSPF, NAT, DNS) via Winbox 4.0<Badge type="warning" text="wip" />
