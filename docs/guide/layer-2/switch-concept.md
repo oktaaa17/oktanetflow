@@ -68,7 +68,7 @@ graph TD
 ### 4. Network Labs: Implementation & Hands-on
 
 #### Cisco Mastery
-* **Cisco**: [Lab 01: Dasar Switch](../../ecosystem/cisco/labs/switch/lab-switch-dasar.md).
+* **Cisco**: [Lab 01: Dasar Switch](../../ecosystem/cisco/labs/switch/lab-01-basic-switch.md).
 
 ::: tip Multi Vendor Coming soons
 More content coming soon! We are still focusing on Cisco Mastery. Check back later for updates.
