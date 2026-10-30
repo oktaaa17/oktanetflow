@@ -206,7 +206,7 @@ Note: Use `area <area_number>` for area-based routing, and `network <network_add
 - **Mistakes I Made:** Dynamic Routing is more complex than static, but easier to manage when nodes are added or removed.
 - **Related Resources:**
   - [Dynamic Routing](/guide/layer-3/dynamic-routing)
-  - [Dynamic Routing Basic](/ecosystem/cisco/labs/routers/lab-dynamic-routing-basic)
+  - [Dynamic Routing Basic](/ecosystem/cisco/labs/routers/lab-02-dynamic-routing-basic)
 - **Downloads:**
   <ButtonVue variant="secondary" as="a" class="no-underline!" href="./assets/lab-dynamic-routing-intermediate/lab-dynamic-routing-intermediate-ospf-multiarea.pkt" download>
   lab-dynamic-routing-intermediate-ospf-multiarea.pkt(Full Config)
