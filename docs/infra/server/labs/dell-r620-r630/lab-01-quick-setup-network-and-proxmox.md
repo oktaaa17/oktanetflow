@@ -69,7 +69,7 @@ head:
 
 ## 3. Ubuntu Cloud VM Setup on Proxmox
 
-[Ubuntu Cloud VM Setup](../../../vm/labs/proxmox/ubuntu-cloud-on-proxmox.md)
+[Ubuntu Cloud VM Setup](../../../vm/labs/proxmox/lab-02-ubuntu-cloud-on-proxmox.md)
 
 ---
 
