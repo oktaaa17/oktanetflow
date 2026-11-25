@@ -56,6 +56,34 @@ dmi_val() {
     echo "${val:-${default}}"
 }
 
+run_smartctl() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 3 smartctl "$@" 2>/dev/null || true
+    else
+        smartctl "$@" 2>/dev/null || true
+    fi
+}
+
+extract_sata_speed() {
+    local smart_info="$1"
+    local sata_line
+    sata_line=$(awk -F':' '/^SATA Version is:/{sub(/^[ \t]+/, "", $2); print $2; exit}' <<< "${smart_info}")
+    if [[ -n "${sata_line}" ]]; then
+        awk '{
+            if (match($0, /current:[ \t]*[0-9.]+[ \t]*Gb\/s/)) {
+                s = substr($0, RSTART, RLENGTH)
+                sub(/current:[ \t]*/, "", s)
+                gsub(/[ \t]+/, "", s)
+                print s
+            } else if (match($0, /[0-9.]+[ \t]*Gb\/s/)) {
+                s = substr($0, RSTART, RLENGTH)
+                gsub(/[ \t]+/, "", s)
+                print s
+            }
+        }' <<< "${sata_line}"
+    fi
+}
+
 format_disk_capacity() {
     local bytes="$1"
     awk -v b="${bytes}" 'BEGIN {
@@ -70,6 +98,36 @@ format_disk_capacity() {
 
         printf "%s (%s)", si, bin
     }'
+}
+
+print_smart_status_line() {
+    local label="$1"
+    shift
+    local smart_h health temp temp_str=""
+
+    smart_h=$(run_smartctl -H "$@")
+    health=$(awk -F':' '
+        /test result:|SMART Health Status:/ {
+            sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit
+        }
+    ' <<< "${smart_h}")
+
+    temp=$(run_smartctl -A "$@" | awk '
+        /Temperature_Celsius|Airflow_Temperature_Cel/ && $10 ~ /^[0-9]+$/ { print $10 "°C"; exit }
+        /^Temperature:[ \t]+[0-9]+/                   && $2 ~ /^[0-9]+$/  { print $2 "°C"; exit }
+        /^Current Drive Temperature:/                 && $4 ~ /^[0-9]+$/  { print $4 "°C"; exit }
+    ' || true)
+    if [[ -n "${temp}" ]]; then
+        temp_str=" (Temp: ${temp})"
+    fi
+
+    if [[ -z "${health}" ]]; then
+        echo -e "  - ${label}: ${YELLOW}SMART Unsupported or RAID pass-through required${NC}"
+    elif [[ "${health^^}" == *"PASSED"* || "${health^^}" == *"OK"* ]]; then
+        echo -e "  - ${label}: ${GREEN}${health}${NC}${temp_str}"
+    else
+        echo -e "  - ${label}: ${RED}${health}${NC}${temp_str}"
+    fi
 }
 
 # Initial Brand Banner
@@ -340,17 +398,13 @@ else
 fi
 
 # Enterprise Hardware RAID CLI Utility Check (Dell PERC / LSI MegaRAID)
+RAID_CLI_FOUND=0
 RAID_TOOL=$(command -v perccli64 || command -v perccli || command -v storcli64 || command -v storcli || true)
 if [[ -n "${RAID_TOOL}" ]]; then
     print_subheader "Hardware RAID Controller Virtual Drives (${RAID_TOOL})"
     "${RAID_TOOL}" /call /vall show 2>/dev/null | grep -E "^[0-9]+/[0-9]+|^DG/VD" || echo "  No virtual drives reported."
 
-    print_subheader "Hardware RAID Physical Drives & Serial Numbers (${RAID_TOOL})"
-    printf "%-12s | %-7s | %-6s | %-5s | %-12s | %-24s | %-22s\n" \
-        "Slot" "State" "Intf" "Media" "Capacity" "Model" "Serial Number (S/N)"
-    echo "-------------|---------|--------|-------|--------------|--------------------------|-----------------------"
-
-    "${RAID_TOOL}" /call /eall /sall show all 2>/dev/null | awk '
+    RAID_PD_OUT=$("${RAID_TOOL}" /call /eall /sall show all 2>/dev/null | awk '
         BEGIN { in_drv = 0 }
         function trim(s) {
             sub(/^[^=]*=[ \t]*/, "", s)
@@ -385,7 +439,16 @@ if [[ -n "${RAID_TOOL}" ]]; then
             next
         }
         END { flush_drv() }
-    ' || true
+    ' || true)
+
+    if [[ -n "${RAID_PD_OUT}" ]]; then
+        RAID_CLI_FOUND=1
+        print_subheader "Hardware RAID Physical Drives & Serial Numbers (${RAID_TOOL})"
+        printf "%-12s | %-7s | %-6s | %-5s | %-12s | %-24s | %-22s\n" \
+            "Slot" "State" "Intf" "Media" "Capacity" "Model" "Serial Number (S/N)"
+        echo "-------------|---------|--------|-------|--------------|--------------------------|-----------------------"
+        echo "${RAID_PD_OUT}"
+    fi
 fi
 
 # Enterprise Hardware RAID CLI Utility Check (HPE Smart Array)
@@ -436,6 +499,10 @@ if command -v smartctl >/dev/null 2>&1; then
     HAS_SMARTCTL=1
 fi
 
+declare -A MEGARAID_PROBE_HOSTS=()
+declare -A RAID_VD_DEVS=()
+declare -a MEGARAID_SMART_TARGETS=()
+
 while read -r dev dtype _; do
     [[ -z "${dev}" || "${dtype}" != "disk" ]] && continue
 
@@ -449,11 +516,18 @@ while read -r dev dtype _; do
     TOTAL_DISK_BYTES=$(( TOTAL_DISK_BYTES + BYTES ))
     CAPACITY=$(format_disk_capacity "${BYTES}")
 
-    # Collect udev & smartctl metadata once per disk
+    # Collect SCSI host driver, udev & smartctl metadata once per disk
+    DEV_REALPATH=$(readlink -f "/sys/block/${dev}/device" 2>/dev/null || true)
+    SCSI_HOST=$(awk '{ if (match($0, /host[0-9]+/)) print substr($0, RSTART, RLENGTH) }' <<< "${DEV_REALPATH}")
+    HOST_DRIVER=""
+    if [[ -n "${SCSI_HOST}" && -r "/sys/class/scsi_host/${SCSI_HOST}/proc_name" ]]; then
+        HOST_DRIVER=$(trim_str "$(cat "/sys/class/scsi_host/${SCSI_HOST}/proc_name" 2>/dev/null || true)")
+    fi
+
     UDEV_INFO=$(udevadm info --query=property --name="${DEV_PATH}" 2>/dev/null || true)
     SMART_INFO=""
     if [[ "${HAS_SMARTCTL}" -eq 1 ]]; then
-        SMART_INFO=$(smartctl -i "${DEV_PATH}" 2>/dev/null || true)
+        SMART_INFO=$(run_smartctl -i "${DEV_PATH}")
     fi
 
     # 1. Interface / Transport (SATA, SAS, NVMe, USB, VirtIO, SCSI)
@@ -484,20 +558,8 @@ while read -r dev dtype _; do
 
     # Enrich Interface with SATA link speed or SAS protocol via smartctl
     if [[ -n "${SMART_INFO}" ]]; then
-        SATA_LINE=$(awk -F':' '/^SATA Version is:/{sub(/^[ \t]+/, "", $2); print $2; exit}' <<< "${SMART_INFO}")
-        if [[ -n "${SATA_LINE}" ]]; then
-            SATA_SPEED=$(awk '{
-                if (match($0, /current:[ \t]*[0-9.]+[ \t]*Gb\/s/)) {
-                    s = substr($0, RSTART, RLENGTH)
-                    sub(/current:[ \t]*/, "", s)
-                    gsub(/[ \t]+/, "", s)
-                    print s
-                } else if (match($0, /[0-9.]+[ \t]*Gb\/s/)) {
-                    s = substr($0, RSTART, RLENGTH)
-                    gsub(/[ \t]+/, "", s)
-                    print s
-                }
-            }' <<< "${SATA_LINE}")
+        if grep -q "^SATA Version is:" <<< "${SMART_INFO}"; then
+            SATA_SPEED=$(extract_sata_speed "${SMART_INFO}")
             if [[ -n "${SATA_SPEED}" ]]; then
                 INTERFACE="SATA (${SATA_SPEED})"
             else
@@ -555,6 +617,26 @@ while read -r dev dtype _; do
     fi
     SERIAL="${SERIAL:-N/A}"
 
+    # 5. Detect Hardware RAID Virtual Disk (e.g., DELL PERC H330 Mini + 32-hex VD GUID)
+    IS_RAID_VD=0
+    if grep -qiE 'PERC|MegaRAID|MR[0-9]|AVAGO|LSI|LOGICAL VOLUME|Smart Array|ServeRAID|Adaptec|ASR[0-9]|Virtual Disk' <<< "${MODEL}"; then
+        IS_RAID_VD=1
+    elif [[ "${HOST_DRIVER}" == "megaraid_sas" && "${SERIAL}" =~ ^[0-9a-fA-F]{32}$ ]]; then
+        IS_RAID_VD=1
+    fi
+
+    if [[ "${IS_RAID_VD}" -eq 1 ]]; then
+        INTERFACE="RAID (VD)"
+        MEDIA="Virtual"
+        RAID_VD_DEVS["${DEV_PATH}"]=1
+        if [[ "${HOST_DRIVER}" == "megaraid_sas" ]] || grep -qiE 'PERC|MegaRAID|MR[0-9]|AVAGO|LSI' <<< "${MODEL}"; then
+            host_key="${SCSI_HOST:-${DEV_PATH}}"
+            if [[ -z "${MEGARAID_PROBE_HOSTS[$host_key]:-}" ]]; then
+                MEGARAID_PROBE_HOSTS["${host_key}"]="${DEV_PATH}"
+            fi
+        fi
+    fi
+
     printf "%-13s | %-15s | %-9s | %-20s | %-26s | %s\n" \
         "${DEV_PATH}" "${INTERFACE:0:15}" "${MEDIA:0:9}" "${CAPACITY:0:20}" "${MODEL:0:26}" "${SERIAL}"
 done < <(lsblk -dn -o NAME,TYPE -e 7,11 2>/dev/null || true)
@@ -568,37 +650,170 @@ else
     echo "  No block disk devices detected."
 fi
 
+# Try/Catch Fallback: Auto-probe real physical drives behind PERC/MegaRAID via smartctl (without perccli)
+if [[ "${RAID_CLI_FOUND}" -eq 0 && ${#MEGARAID_PROBE_HOSTS[@]} -gt 0 ]]; then
+    print_subheader "Physical Drives Behind Hardware RAID (smartctl Pass-Through)"
+    printf "%-13s | %-15s | %-9s | %-20s | %-26s | %-24s\n" \
+        "DEVICE" "INTERFACE" "MEDIA" "CAPACITY (GB / GiB)" "MODEL" "SERIAL NUMBER (S/N)"
+    echo "--------------|-----------------|-----------|----------------------|----------------------------|-------------------------"
+
+    if [[ "${HAS_SMARTCTL}" -eq 1 ]]; then
+        RAID_PHYS_COUNT=0
+        RAID_PHYS_BYTES=0
+        declare -A SEEN_RAID_SN=()
+
+        for host_key in $(printf '%s\n' "${!MEGARAID_PROBE_HOSTS[@]}" | sort); do
+            probe_dev="${MEGARAID_PROBE_HOSTS[$host_key]}"
+
+            for (( did=0; did<64; did++ )); do
+                P_INFO=""
+                P_DRV_ARG=""
+
+                # Try 1: Base MegaRAID pass-through (fast-skips empty slots & handles SAS natively)
+                BASE_OUT=$(run_smartctl -i -d "megaraid,${did}" "${probe_dev}")
+                if grep -qiE "No such device|INQUIRY failed" <<< "${BASE_OUT}"; then
+                    continue
+                fi
+
+                if grep -qiE "^(Device Model|Model Number|Product):" <<< "${BASE_OUT}"; then
+                    P_INFO="${BASE_OUT}"
+                    P_DRV_ARG="megaraid,${did}"
+                    # Try 2: Upgrade SATA drives to sat+megaraid for full SATA speed, SSD/HDD & S/N
+                    if ! grep -qi "Transport protocol:.*SAS" <<< "${BASE_OUT}"; then
+                        SAT_OUT=$(run_smartctl -i -d "sat+megaraid,${did}" "${probe_dev}")
+                        if grep -qiE "^(Device Model|Model Number):" <<< "${SAT_OUT}"; then
+                            P_INFO="${SAT_OUT}"
+                            P_DRV_ARG="sat+megaraid,${did}"
+                        fi
+                    fi
+                else
+                    # Catch: Some firmwares respond only to sat+megaraid
+                    SAT_OUT=$(run_smartctl -i -d "sat+megaraid,${did}" "${probe_dev}")
+                    if grep -qiE "^(Device Model|Model Number):" <<< "${SAT_OUT}"; then
+                        P_INFO="${SAT_OUT}"
+                        P_DRV_ARG="sat+megaraid,${did}"
+                    fi
+                fi
+
+                [[ -z "${P_INFO}" ]] && continue
+
+                # Skip non-disk devices (e.g., Dell/LSI backplane enclosure services)
+                if grep -qiE "^Device type:[ \t]*(enclosure|processor|cd|dvd|tape|medium changer)" <<< "${P_INFO}"; then
+                    continue
+                fi
+
+                # Extract Serial Number & deduplicate across controllers
+                P_SERIAL=$(awk -F':' '/^[ \t]*Serial [Nn]umber:/{sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit}' <<< "${P_INFO}")
+                P_SERIAL="${P_SERIAL:-N/A}"
+                if [[ "${P_SERIAL}" != "N/A" ]]; then
+                    if [[ -n "${SEEN_RAID_SN[$P_SERIAL]:-}" ]]; then
+                        continue
+                    fi
+                    SEEN_RAID_SN["${P_SERIAL}"]=1
+                fi
+
+                # Extract Capacity (bytes -> GB / GiB)
+                P_BYTES=$(awk '
+                    /^(User Capacity|Total NVM Capacity|Namespace 1 Size\/Capacity):/ {
+                        val = $0
+                        sub(/^[^:]*:[ \t]*/, "", val)
+                        sub(/[ \t]*bytes.*$/, "", val)
+                        gsub(/[^0-9]/, "", val)
+                        print val
+                        exit
+                    }
+                ' <<< "${P_INFO}")
+                if [[ ! "${P_BYTES}" =~ ^[0-9]+$ ]]; then
+                    P_BYTES=0
+                fi
+
+                RAID_PHYS_COUNT=$(( RAID_PHYS_COUNT + 1 ))
+                RAID_PHYS_BYTES=$(( RAID_PHYS_BYTES + P_BYTES ))
+                P_CAP=$(format_disk_capacity "${P_BYTES}")
+
+                # Extract Interface (SATA + speed / SAS / NVMe)
+                if grep -q "^SATA Version is:" <<< "${P_INFO}"; then
+                    P_SATA_SPD=$(extract_sata_speed "${P_INFO}")
+                    if [[ -n "${P_SATA_SPD}" ]]; then
+                        P_INTF="SATA (${P_SATA_SPD})"
+                    else
+                        P_INTF="SATA"
+                    fi
+                elif grep -qi "Transport protocol:.*SAS" <<< "${P_INFO}"; then
+                    P_INTF="SAS"
+                elif grep -qi "^NVMe Version:" <<< "${P_INFO}"; then
+                    P_INTF="NVMe"
+                elif [[ "${P_DRV_ARG}" == sat+* ]] || grep -q "^ATA Version is:" <<< "${P_INFO}"; then
+                    P_INTF="SATA"
+                else
+                    P_INTF="SAS/SCSI"
+                fi
+
+                # Extract Vendor & Model
+                P_VENDOR=$(awk -F':' '/^Vendor:/{sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit}' <<< "${P_INFO}")
+                P_MODEL=$(awk -F':' '/^(Device Model|Model Number|Product):/{sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit}' <<< "${P_INFO}")
+                if [[ -n "${P_VENDOR}" && "${P_VENDOR^^}" != "ATA" && "${P_VENDOR^^}" != "NVME" ]]; then
+                    if [[ -z "${P_MODEL}" ]]; then
+                        P_MODEL="${P_VENDOR}"
+                    elif [[ "${P_MODEL,,}" != "${P_VENDOR,,}"* ]]; then
+                        P_MODEL="${P_VENDOR} ${P_MODEL}"
+                    fi
+                fi
+                P_MODEL="${P_MODEL:-Unknown}"
+
+                # Extract Media Type (SSD / NVMe SSD / HDD)
+                if [[ "${P_INTF}" == NVMe* ]]; then
+                    P_MEDIA="NVMe SSD"
+                elif grep -qi "Solid State Device" <<< "${P_INFO}"; then
+                    P_MEDIA="SSD"
+                elif grep -qiE "Rotation Rate:.*[0-9]+[ \t]*rpm" <<< "${P_INFO}"; then
+                    P_MEDIA="HDD"
+                elif grep -qi "SSD" <<< "${P_MODEL}"; then
+                    P_MEDIA="SSD"
+                else
+                    P_MEDIA="Unknown"
+                fi
+
+                DID_LABEL="megaraid,${did}"
+                MEGARAID_SMART_TARGETS+=("${probe_dev}|${P_DRV_ARG}|${DID_LABEL}")
+
+                printf "%-13s | %-15s | %-9s | %-20s | %-26s | %s\n" \
+                    "${DID_LABEL}" "${P_INTF:0:15}" "${P_MEDIA:0:9}" "${P_CAP:0:20}" "${P_MODEL:0:26}" "${P_SERIAL}"
+            done
+        done
+
+        if [[ "${RAID_PHYS_COUNT}" -gt 0 ]]; then
+            RAID_CAP_FMT=$(format_disk_capacity "${RAID_PHYS_BYTES}")
+            echo "--------------------------------------------------------------------------------------------------------------------------"
+            printf "  Total Physical Disks: ${BOLD}${GREEN}%d${NC} | Total Raw Capacity: ${BOLD}${GREEN}%s${NC}\n" \
+                "${RAID_PHYS_COUNT}" "${RAID_CAP_FMT}"
+        else
+            echo -e "  ${YELLOW}[WARN] RAID Virtual Disk detected, but smartctl pass-through returned no physical drives.${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}[WARN] RAID Virtual Disk detected, but smartctl (smartmontools) is not installed for pass-through.${NC}"
+    fi
+fi
+
 # Check SMART Health if smartctl exists
 if [[ "${HAS_SMARTCTL}" -eq 1 ]]; then
     print_subheader "SMART Health Status"
     while read -r dev dtype _; do
         [[ -z "${dev}" || "${dtype}" != "disk" ]] && continue
         DEV_PATH="/dev/${dev}"
-        SMART_H=$(smartctl -H "${DEV_PATH}" 2>/dev/null || true)
-        HEALTH=$(awk -F':' '
-            /test result:|SMART Health Status:/ {
-                sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit
-            }
-        ' <<< "${SMART_H}")
-
-        TEMP=$(smartctl -A "${DEV_PATH}" 2>/dev/null | awk '
-            /Temperature_Celsius|Airflow_Temperature_Cel/ && $10 ~ /^[0-9]+$/ { print $10 "°C"; exit }
-            /^Temperature:[ \t]+[0-9]+/                   && $2 ~ /^[0-9]+$/  { print $2 "°C"; exit }
-            /^Current Drive Temperature:/                 && $4 ~ /^[0-9]+$/  { print $4 "°C"; exit }
-        ' || true)
-        TEMP_STR=""
-        if [[ -n "${TEMP}" ]]; then
-            TEMP_STR=" (Temp: ${TEMP})"
+        # Skip raw Virtual Disk SMART if physical pass-through drives were already resolved
+        if [[ -n "${RAID_VD_DEVS[$DEV_PATH]:-}" && ${#MEGARAID_SMART_TARGETS[@]} -gt 0 ]]; then
+            continue
         fi
-
-        if [[ -z "${HEALTH}" ]]; then
-            echo -e "  - ${DEV_PATH}: ${YELLOW}SMART Unsupported or RAID pass-through required${NC}"
-        elif [[ "${HEALTH^^}" == *"PASSED"* || "${HEALTH^^}" == *"OK"* ]]; then
-            echo -e "  - ${DEV_PATH}: ${GREEN}${HEALTH}${NC}${TEMP_STR}"
-        else
-            echo -e "  - ${DEV_PATH}: ${RED}${HEALTH}${NC}${TEMP_STR}"
-        fi
+        print_smart_status_line "${DEV_PATH}" "${DEV_PATH}"
     done < <(lsblk -dn -o NAME,TYPE -e 7,11 2>/dev/null || true)
+
+    if [[ ${#MEGARAID_SMART_TARGETS[@]} -gt 0 ]]; then
+        for entry in "${MEGARAID_SMART_TARGETS[@]}"; do
+            IFS='|' read -r m_dev m_arg m_label <<< "${entry}"
+            print_smart_status_line "${m_dev} [${m_label}]" -d "${m_arg}" "${m_dev}"
+        done
+    fi
 fi
 
 # ------------------------------------------------------------------------------
