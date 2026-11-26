@@ -40,7 +40,15 @@ head:
 ## 1. Bash Quick Proxmox Server Specs Scanning
 
 ```bash
+pve:
 bash <(curl -fsSL https://oktanetflow.vercel.app/infra/linux/labs/bash/proxmox-bash/pve-hw-scanner.sh | tr -d '\r')
+
+deb:
+bash <(curl -fsSL https://oktanetflow.vercel.app/infra/linux/labs/bash/proxmox-bash/hw-scanner-deb-v2.sh | tr -d '\r')
+
+rhel:
+bash <(curl -fsSL https://oktanetflow.vercel.app/infra/linux/labs/bash/proxmox-bash/hw-scanner-rhel-v2.sh | tr -d '\r')
+
 ```
 
 ::: info
