@@ -47,6 +47,47 @@ trim_str() {
     printf '%s' "${s}"
 }
 
+sanitize_nv_field() {
+    local v
+    v=$(trim_str "${1:-}")
+    if [[ -z "${v}" ]] || grep -qiE '^\[?(N/A|Not Supported|Unknown Error|Error|Insufficient Permissions|None)\]?$' <<< "${v}"; then
+        echo "N/A"
+    else
+        echo "${v}"
+    fi
+}
+
+get_pci_gpu_dsn() {
+    local slot="$1"
+    if command -v lspci >/dev/null 2>&1; then
+        lspci -vvv -s "${slot}" 2>/dev/null | awk '
+            /Device Serial Number/ {
+                sub(/^.*Device Serial Number[ \t]+/, "")
+                sub(/[ \t]+$/, "")
+                print $1
+                exit
+            }
+        ' || true
+    fi
+}
+
+get_pci_gpu_bar_vram() {
+    local slot="$1"
+    if command -v lspci >/dev/null 2>&1; then
+        lspci -vvv -s "${slot}" 2>/dev/null | awk '
+            /Memory at .*prefetchable.*\[size=[0-9]+G\]/ {
+                s = $0
+                sub(/^.*\[size=/, "", s)
+                sub(/G\].*$/, "", s)
+                if ((s + 0) > max_g) max_g = s + 0
+            }
+            END {
+                if (max_g > 0) printf "%dG (BAR)", max_g
+            }
+        ' || true
+    fi
+}
+
 dmi_val() {
     local key="$1"
     local default="${2:-Unknown}"
@@ -911,6 +952,7 @@ print_subheader "PCIe / Virtual Graphics Controllers"
 GPU_FOUND=0
 NVIDIA_PCI_DETECTED=0
 NVIDIA_VFIO_BOUND=0
+declare -a NVIDIA_PCI_SLOTS=()
 
 if command -v lspci >/dev/null 2>&1; then
     GPU_PCI_OUT=$(lspci -Dnn 2>/dev/null | grep -iE 'vga compatible controller|3d controller|display controller' || true)
@@ -948,6 +990,7 @@ if command -v lspci >/dev/null 2>&1; then
 
             if grep -qi 'NVIDIA' <<< "${gpu_model}"; then
                 NVIDIA_PCI_DETECTED=1
+                NVIDIA_PCI_SLOTS+=("${pci_slot}|${gpu_driver}|${gpu_model}")
                 if [[ "${gpu_driver}" == "vfio-pci" ]]; then
                     NVIDIA_VFIO_BOUND=1
                 fi
@@ -1015,8 +1058,11 @@ else
         else
             gpu_driver="None/Unbound"
         fi
-        if [[ "${p_ven,,}" == "0x10de" && "${gpu_driver}" == "vfio-pci" ]]; then
-            NVIDIA_VFIO_BOUND=1
+        if [[ "${p_ven,,}" == "0x10de" ]]; then
+            NVIDIA_PCI_SLOTS+=("${pci_slot}|${gpu_driver}|${ven_name} [${p_ven#0x}:${p_dev#0x}]")
+            if [[ "${gpu_driver}" == "vfio-pci" ]]; then
+                NVIDIA_VFIO_BOUND=1
+            fi
         fi
 
         link_spd=$(trim_str "$(cat "${pci_dir}/current_link_speed" 2>/dev/null || true)")
@@ -1037,24 +1083,80 @@ if [[ "${GPU_FOUND}" -eq 0 ]]; then
     echo "  No PCIe or virtual GPU devices detected."
 fi
 
-# Try/Catch: NVIDIA GPU Detailed Inventory (VRAM, Driver, Temp, S/N, UUID)
+# 3-Layer Try/Catch: NVIDIA GPU Detailed Inventory (nvidia-smi -> /proc/driver/nvidia -> lspci -vvv)
+NV_RESOLVED=0
+NV_SMI_ERR=""
+NV_DRV_VER=""
+NV_KMOD_TYPE=""
+NV_IS_BLACKWELL=0
+
+if [[ ${#NVIDIA_PCI_SLOTS[@]} -gt 0 ]]; then
+    for s_entry in "${NVIDIA_PCI_SLOTS[@]}"; do
+        if grep -qiE 'GB20|RTX 50|B100|B200' <<< "${s_entry}"; then
+            NV_IS_BLACKWELL=1
+            break
+        fi
+    done
+fi
+
+if [[ -r /proc/driver/nvidia/version ]]; then
+    NV_DRV_VER=$(awk '/^NVRM version:/{ for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\.[0-9]+/) { print $i; exit } }' /proc/driver/nvidia/version 2>/dev/null || true)
+    if grep -qi "Open Kernel Module" /proc/driver/nvidia/version 2>/dev/null; then
+        NV_KMOD_TYPE="Open"
+    else
+        NV_KMOD_TYPE="Proprietary"
+    fi
+fi
+if [[ -z "${NV_DRV_VER}" ]] && command -v modinfo >/dev/null 2>&1; then
+    NV_DRV_VER=$(modinfo -F version nvidia 2>/dev/null | head -n 1 || true)
+fi
+
+# Layer 1 (Try): nvidia-smi with per-field sanitization (does NOT discard valid GPUs when GeForce serial is N/A or Error)
 if command -v nvidia-smi >/dev/null 2>&1; then
-    NVIDIA_OUT=$(nvidia-smi --query-gpu=index,name,memory.total,driver_version,temperature.gpu,serial,uuid --format=csv,noheader,nounits 2>/dev/null || true)
-    if [[ -n "${NVIDIA_OUT}" ]] && ! grep -qiE "failed|error|no devices were found" <<< "${NVIDIA_OUT}"; then
+    NVIDIA_RC=0
+    NVIDIA_OUT=$(nvidia-smi --query-gpu=index,pci.bus_id,name,memory.total,driver_version,temperature.gpu,serial,uuid --format=csv,noheader,nounits 2>&1) || NVIDIA_RC=$?
+
+    # Retry without serial field if older nvidia-smi rejects a query field
+    if [[ "${NVIDIA_RC}" -ne 0 ]] && grep -qi "is not a valid field" <<< "${NVIDIA_OUT}"; then
+        NVIDIA_RC=0
+        NVIDIA_OUT=$(nvidia-smi --query-gpu=index,pci.bus_id,name,memory.total,driver_version,temperature.gpu,uuid --format=csv,noheader,nounits 2>&1) || NVIDIA_RC=$?
+        if [[ "${NVIDIA_RC}" -eq 0 ]]; then
+            NVIDIA_OUT=$(awk -F',' 'BEGIN{OFS=","} /^[0-9]+,/{ print $1,$2,$3,$4,$5,$6,"N/A",$7 }' <<< "${NVIDIA_OUT}")
+        fi
+    fi
+
+    if [[ "${NVIDIA_RC}" -eq 0 ]] && grep -qE '^[0-9]+,' <<< "${NVIDIA_OUT}"; then
+        NV_RESOLVED=1
         print_subheader "NVIDIA GPU Inventory, VRAM & Serial Numbers (nvidia-smi)"
         printf "%-5s | %-28s | %-11s | %-11s | %-6s | %-20s | %s\n" \
             "GPU" "MODEL" "VRAM" "DRIVER" "TEMP" "SERIAL NUMBER (S/N)" "UUID"
         echo "------|------------------------------|-------------|-------------|--------|----------------------|----------------------------------------"
 
-        while IFS=',' read -r nv_idx nv_name nv_vram nv_drv nv_temp nv_sn nv_uuid; do
+        while IFS=',' read -r nv_idx nv_bus nv_name nv_vram nv_drv nv_temp nv_sn nv_uuid; do
             nv_idx=$(trim_str "${nv_idx:-}")
             [[ ! "${nv_idx}" =~ ^[0-9]+$ ]] && continue
-            nv_name=$(trim_str "${nv_name:-Unknown}")
-            nv_vram=$(trim_str "${nv_vram:-}")
-            nv_drv=$(trim_str "${nv_drv:-N/A}")
-            nv_temp=$(trim_str "${nv_temp:-}")
-            nv_sn=$(trim_str "${nv_sn:-}")
-            nv_uuid=$(trim_str "${nv_uuid:-N/A}")
+
+            nv_bus=$(trim_str "${nv_bus:-}")
+            nv_bus="${nv_bus,,}"
+            if [[ "${nv_bus}" == 0000????:??:??.? ]]; then
+                nv_bus="${nv_bus#0000}"
+            fi
+
+            nv_name=$(sanitize_nv_field "${nv_name:-}")
+            [[ "${nv_name}" == "N/A" ]] && nv_name="Unknown"
+            nv_vram=$(sanitize_nv_field "${nv_vram:-}")
+            nv_drv=$(sanitize_nv_field "${nv_drv:-}")
+            nv_temp=$(sanitize_nv_field "${nv_temp:-}")
+            nv_sn=$(sanitize_nv_field "${nv_sn:-}")
+            nv_uuid=$(sanitize_nv_field "${nv_uuid:-}")
+
+            # Fallback for GeForce cards where VBIOS locks serial: check PCIe Device Serial Number
+            if [[ "${nv_sn}" == "N/A" && -n "${nv_bus}" ]]; then
+                nv_dsn=$(get_pci_gpu_dsn "${nv_bus}")
+                if [[ -n "${nv_dsn}" ]]; then
+                    nv_sn="${nv_dsn}"
+                fi
+            fi
 
             if [[ "${nv_vram}" =~ ^[0-9]+$ ]]; then
                 if (( nv_vram >= 1024 )); then
@@ -1072,26 +1174,93 @@ if command -v nvidia-smi >/dev/null 2>&1; then
                 nv_temp_fmt="N/A"
             fi
 
-            if [[ -z "${nv_sn}" || "${nv_sn}" == "[N/A]" || "${nv_sn}" == "[Not Supported]" ]]; then
-                nv_sn="N/A"
-            fi
-
             printf "%-5s | %-28s | %-11s | %-11s | %-6s | %-20s | %s\n" \
                 "GPU ${nv_idx}" "${nv_name:0:28}" "${nv_vram_fmt:0:11}" "${nv_drv:0:11}" "${nv_temp_fmt:0:6}" "${nv_sn:0:20}" "${nv_uuid}"
         done <<< "${NVIDIA_OUT}"
-    elif [[ "${NVIDIA_PCI_DETECTED}" -eq 1 ]]; then
-        if [[ "${NVIDIA_VFIO_BOUND}" -eq 1 ]]; then
-            echo -e "  ${CYAN}[INFO] NVIDIA GPU is bound to vfio-pci (PCIe Passthrough); nvidia-smi telemetry unavailable on host.${NC}"
-        else
-            echo -e "  ${YELLOW}[WARN] NVIDIA GPU detected, but nvidia-smi could not communicate with the driver.${NC}"
-        fi
-    fi
-elif [[ "${NVIDIA_PCI_DETECTED}" -eq 1 ]]; then
-    if [[ "${NVIDIA_VFIO_BOUND}" -eq 1 ]]; then
-        echo -e "  ${CYAN}[INFO] NVIDIA GPU is bound to vfio-pci (PCIe Passthrough).${NC}"
     else
-        echo -e "  ${YELLOW}[WARN] NVIDIA GPU detected, but nvidia-smi is not installed (install NVIDIA driver for VRAM/S/N details).${NC}"
+        NV_SMI_ERR=$(awk 'NF { gsub(/^[ \t]+|[ \t]+$/, ""); print; exit }' <<< "${NVIDIA_OUT}")
     fi
+fi
+
+# Layer 2 (Catch): /proc/driver/nvidia/gpus/*/information + lspci -vvv (works even if nvidia-smi/NVML fails)
+if [[ "${NV_RESOLVED}" -eq 0 && "${NVIDIA_PCI_DETECTED}" -eq 1 ]]; then
+    PROC_NV_ROWS=""
+    nv_pidx=0
+    for nv_info_file in /proc/driver/nvidia/gpus/*/information; do
+        [[ -r "${nv_info_file}" ]] || continue
+        p_bus=$(basename "$(dirname "${nv_info_file}")")
+        p_model=$(awk -F':' '/^Model:/{sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit}' "${nv_info_file}" 2>/dev/null || true)
+        p_uuid=$(awk -F':' '/^GPU UUID:/{sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit}' "${nv_info_file}" 2>/dev/null || true)
+        p_minor=$(awk -F':' '/^Device Minor:/{gsub(/[ \t]+/, "", $2); print $2; exit}' "${nv_info_file}" 2>/dev/null || true)
+        p_idx="${p_minor:-${nv_pidx}}"
+        nv_pidx=$(( nv_pidx + 1 ))
+
+        p_vram=$(get_pci_gpu_bar_vram "${p_bus}")
+        p_dsn=$(get_pci_gpu_dsn "${p_bus}")
+        p_uuid=$(sanitize_nv_field "${p_uuid}")
+        if [[ "${p_uuid}" == *"????"* ]]; then
+            p_uuid="N/A (GPU Init Failed)"
+        fi
+        p_drv_show="${NV_DRV_VER:-nvidia}"
+
+        PROC_NV_ROWS+=$(printf "%-5s | %-28s | %-11s | %-11s | %-6s | %-20s | %s\n" \
+            "GPU ${p_idx}" "${p_model:0:28}" "${p_vram:-N/A}" "${p_drv_show:0:11}" "N/A" "${p_dsn:-N/A}" "${p_uuid}")$'\n'
+    done
+
+    if [[ -n "${PROC_NV_ROWS}" ]]; then
+        NV_RESOLVED=1
+        print_subheader "NVIDIA GPU Inventory, VRAM & Serial Numbers (/proc/driver/nvidia Fallback)"
+        printf "%-5s | %-28s | %-11s | %-11s | %-6s | %-20s | %s\n" \
+            "GPU" "MODEL" "VRAM" "DRIVER" "TEMP" "SERIAL NUMBER (S/N)" "UUID"
+        echo "------|------------------------------|-------------|-------------|--------|----------------------|----------------------------------------"
+        printf "%s" "${PROC_NV_ROWS}"
+    fi
+fi
+
+# Layer 3 (Catch): PCIe / lspci -vvv fallback when both nvidia-smi & /proc/driver/nvidia are unavailable
+if [[ "${NV_RESOLVED}" -eq 0 && ${#NVIDIA_PCI_SLOTS[@]} -gt 0 ]]; then
+    print_subheader "NVIDIA GPU Inventory, VRAM & Serial Numbers (PCIe / lspci Fallback)"
+    printf "%-5s | %-28s | %-11s | %-11s | %-6s | %-20s | %s\n" \
+        "GPU" "MODEL" "VRAM" "DRIVER" "TEMP" "SERIAL NUMBER (S/N)" "UUID"
+    echo "------|------------------------------|-------------|-------------|--------|----------------------|----------------------------------------"
+
+    nv_lidx=0
+    for s_entry in "${NVIDIA_PCI_SLOTS[@]}"; do
+        IFS='|' read -r s_slot s_drv s_raw_model <<< "${s_entry}"
+        s_clean=$(awk '{
+            if (match($0, /\[GeForce[^\]]+\]|\[NVIDIA[^\]]+\]|\[Tesla[^\]]+\]|\[Quadro[^\]]+\]|\[RTX[^\]]+\]|\[A[0-9]+[^\]]*\]|\[H[0-9]+[^\]]*\]|\[L[0-9]+[^\]]*\]/)) {
+                s = substr($0, RSTART + 1, RLENGTH - 2)
+                if (s !~ /^NVIDIA/) s = "NVIDIA " s
+                print s
+                exit
+            }
+            sub(/ \[10de:[0-9a-fA-F]+\].*$/, "")
+            print
+        }' <<< "${s_raw_model}")
+        s_vram=$(get_pci_gpu_bar_vram "${s_slot}")
+        s_dsn=$(get_pci_gpu_dsn "${s_slot}")
+        s_drv_show="${NV_DRV_VER:-${s_drv}}"
+        s_uuid_note="N/A (NVML offline)"
+        if [[ "${s_drv}" == "vfio-pci" ]]; then
+            s_uuid_note="N/A (vfio-pci passthrough)"
+        fi
+
+        printf "%-5s | %-28s | %-11s | %-11s | %-6s | %-20s | %s\n" \
+            "GPU ${nv_lidx}" "${s_clean:0:28}" "${s_vram:-N/A}" "${s_drv_show:0:11}" "N/A" "${s_dsn:-N/A}" "${s_uuid_note}"
+        nv_lidx=$(( nv_lidx + 1 ))
+    done
+fi
+
+# Diagnostic hint if nvidia-smi failed on detected NVIDIA hardware
+if [[ "${NVIDIA_PCI_DETECTED}" -eq 1 && -n "${NV_SMI_ERR}" ]]; then
+    echo -e "  ${YELLOW}[NOTE] nvidia-smi: ${NV_SMI_ERR}${NC}"
+    if [[ "${NV_IS_BLACKWELL}" -eq 1 && "${NV_KMOD_TYPE}" == "Proprietary" ]]; then
+        echo -e "  ${CYAN}[HINT] RTX 50-series (Blackwell) requires NVIDIA Open Kernel Modules (nvidia-driver-xxx-open).${NC}"
+    elif grep -qi "version mismatch" <<< "${NV_SMI_ERR}"; then
+        echo -e "  ${CYAN}[HINT] NVIDIA kernel/library version mismatch — reboot or reload nvidia modules.${NC}"
+    fi
+elif [[ "${NVIDIA_PCI_DETECTED}" -eq 1 && "${NVIDIA_VFIO_BOUND}" -eq 1 ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo -e "  ${CYAN}[INFO] NVIDIA GPU is bound to vfio-pci (PCIe Passthrough).${NC}"
 fi
 
 # Try/Catch: AMD / Discrete DRM GPU Detailed Inventory via sysfs (no extra CLI required)
