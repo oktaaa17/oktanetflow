@@ -18,6 +18,9 @@ Halaman ini menyediakan kumpulan utilitas praktis, kalkulator jaringan, dan alat
 - [Bootable USB Installer](/tools/bootable-usb)
   Panduan praktis pembuatan flashdisk bootable untuk berbagai sistem operasi menggunakan tool modern seperti Rufus.
 
+- [sshm — Agile CLI/TUI SSH Client](/tools/sshm)
+  SSH client & server manager single-binary berbahasa Go untuk Windows dengan Split-Pane Inspector, live latency probe, Windows Credential Manager, dan EXE Installer.
+
 ## Integrasi Lanjutan
 
 Tools tambahan dan visualisasi topologi interaktif sedang dikembangkan untuk mendukung simulasi lab langsung di peramban.
